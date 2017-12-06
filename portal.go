@@ -122,6 +122,11 @@ func DeleteRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if authProvider.CheckAdminPanel(username) &&
+		r.PostForm.Get("client") != username && r.PostForm.Get("client") != "" {
+		username = r.PostForm.Get("client")
+	}
+
 	entries, ok := connectionTable[username]
 	if !ok {
 		w.Write([]byte("ERROR NOT EXIST"))
@@ -141,6 +146,32 @@ func DeleteRoute(w http.ResponseWriter, r *http.Request) {
 
 	portTable[sourceip][entry.ExternalPort] = nil
 	delete(connectionTable[username], entry)
+	w.Write([]byte("OK"))
+}
+
+func DeleteAll(w http.ResponseWriter, r *http.Request) {
+	log.Println("Delete All Routes request", r.RemoteAddr)
+
+	err := r.ParseForm()
+	if err != nil {
+		log.Println(err)
+	}
+	username := r.PostForm.Get("username")
+	password := r.PostForm.Get("password")
+
+	if !authProvider.Authenticate(username, password) {
+		w.Write([]byte("ERROR AUTH"))
+		return
+	}
+
+	if authProvider.CheckAdminPanel(username) {
+		for user, _ := range connectionTable {
+			for entry := range connectionTable[user] {
+				portTable[entry.SourceIP][entry.ExternalPort] = nil
+				delete(connectionTable[user], entry)
+			}
+		}
+	}
 	w.Write([]byte("OK"))
 }
 
@@ -187,7 +218,14 @@ func ListRoutes(w http.ResponseWriter, r *http.Request) {
 		i++
 	}
 
-	//keys := []iptables.NATEntry{{SourceIP: "192.168.1.1", DestinationIP: "192.168.1.2", ExternalPort: "80", InternalPort: "8080"}}
+	if authProvider.CheckAdminPanel(username) {
+		for user, _ := range connectionTable {
+			for k := range connectionTable[user] {
+				k.Client = user
+				keys = append(keys, k)
+			}
+		}
+	}
 
 	data, err := json.Marshal(keys)
 	if err != nil {
@@ -239,6 +277,12 @@ func Authenticate(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ERROR AUTH"))
 		return
 	}
+
+	if authProvider.CheckAdminPanel(username) {
+		w.Write([]byte("ADMIN"))
+		return
+	}
+
 	w.Write([]byte("OK"))
 }
 
@@ -276,13 +320,13 @@ func main() {
 	mux.HandleFunc("/ports", ListPorts)
 	mux.HandleFunc("/auth", Authenticate)
 	mux.HandleFunc("/list", ListRoutes)
+	mux.HandleFunc("/deleteAll", DeleteAll)
 
 	port80 := &http.Server{}
 
 	switch conf.Https {
 	case "none":
 		port80 = &http.Server{Addr: ":80", Handler: mux}
-
 	case "manual":
 		port80 = &http.Server{Addr: ":80", Handler: http.HandlerFunc(redirectTLS)}
 		port443 := &http.Server{Addr: ":443", Handler: mux}
